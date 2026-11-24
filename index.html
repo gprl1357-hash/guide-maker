@@ -62,6 +62,8 @@
 <main>
   <section id="p1" class="on">
     <h2>가이드 문서 제목 설정</h2>
+    <div class="drop" id="open" style="padding:14px">이전에 저장한 HTML로 이어서 수정하려면 <b>여기로 끌어놓거나 클릭</b>하세요.</div>
+    <input type="file" id="openFile" accept=".html,.htm,text/html" hidden>
     <label for="title">제목 *</label>
     <input type="text" id="title" placeholder="예) 사내 VPN 접속 방법">
     <label for="purpose">목적</label>
@@ -98,6 +100,7 @@
     <div class="row" style="margin-top:0">
       <button class="btn pri" id="pdf">PDF로 저장 / 인쇄</button>
       <button class="btn" id="html">HTML 파일 다운로드</button>
+      <button class="btn" id="pptx">PPT로 저장 (터틀 스타일)</button>
       <span class="sp"></span>
       <button class="btn" data-go="2">← 수정하기</button>
     </div>
@@ -215,8 +218,10 @@ document.addEventListener('dragover', e => { e.preventDefault(); document.body.c
 document.addEventListener('dragleave', e => { if (!e.relatedTarget) document.body.classList.remove('dragging'); });
 document.addEventListener('drop', e => {
   e.preventDefault(); document.body.classList.remove('dragging');
+  const html = [...e.dataTransfer.files].find(f => /\.html?$/i.test(f.name));
+  if (html) return loadHTML(html);
   const files = images(e.dataTransfer.files);
-  if (files.length) addImages(files); else if (e.dataTransfer.files.length) alert('이미지 파일만 넣을 수 있습니다.');
+  if (files.length) addImages(files); else if (e.dataTransfer.files.length) alert('이미지 또는 저장한 HTML 파일만 넣을 수 있습니다.');
 });
 document.addEventListener('paste', e => {
   const files = images([...e.clipboardData.items].filter(i => i.kind === 'file').map(i => i.getAsFile()));
@@ -228,11 +233,13 @@ document.addEventListener('paste', e => {
 $('#addText').onclick = () => addStep().card.scrollIntoView({ behavior: 'smooth', block: 'center' });
 
 // ---------- 이미지 편집기 ----------
-function setImage(step, file) {
-  const url = URL.createObjectURL(file);
+const readURL = f => new Promise(ok => { const r = new FileReader(); r.onload = () => ok(r.result); r.readAsDataURL(f); });
+// src: File 또는 data URL. saved: 불러온 단계 데이터(도형 복원용)
+async function setImage(step, src, saved) {
+  const url = typeof src === 'string' ? src : await readURL(src);   // blob URL은 저장 데이터에 못 쓰므로 data URL로 보관
   fabric.Image.fromURL(url, img => {
-    URL.revokeObjectURL(url);
-    const maxW = Math.min(img.width, $('#steps').clientWidth - 34 || 860);
+    step.src = url;
+    const maxW = Math.min(img.width, Math.max(300, $('#steps').clientWidth - 34));
     step.scale = maxW / img.width;
     if (step.canvas) step.canvas.dispose(), $('.stage', step.card).innerHTML = '<canvas></canvas>';
     const c = step.canvas = new fabric.Canvas($('canvas', step.card), { width: maxW, height: img.height * step.scale, preserveObjectStacking: true });
@@ -241,6 +248,17 @@ function setImage(step, file) {
     c.on('mouse:down', () => activeStep = step);
     $('.empty', step.card).hidden = true;
     $('.editor', step.card).hidden = false;
+    if (saved) restore(step, saved);
+  });
+}
+function restore(step, saved) {
+  // 불러온 파일은 믿을 수 없으므로 외부 이미지를 가리키는 개체는 버림
+  const objs = (saved.objects || []).filter(o => !/"src"|"type":"image"/.test(JSON.stringify(o)));
+  if (!objs.length) return;
+  fabric.util.enlivenObjects(objs, list => {
+    const r = step.scale / (Number(saved.scale) || step.scale);   // 화면 폭이 달라져도 위치 유지
+    list.forEach(o => { o.set({ left: o.left * r, top: o.top * r, scaleX: o.scaleX * r, scaleY: o.scaleY * r }); step.canvas.add(o); });
+    step.canvas.requestRenderAll();
   });
 }
 function paint(o, color) {
@@ -296,18 +314,147 @@ function buildDoc() {
   return `<article class="gd"><h1>${esc(title)}</h1><div class="meta">${meta}</div>${purpose ? `<div class="purpose"><b>목적</b><br>${esc(purpose)}</div>` : ''}${body || '<p class="meta">작성된 단계가 없습니다.</p>'}</article>`;
 }
 $('#pdf').onclick = () => print();
-$('#html').onclick = async () => {
-  const css = [...document.styleSheets[0].cssRules].map(r => r.cssText).filter(t => /^(:root|\.gd|\*)/.test(t)).join('\n');
-  const html = `<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${esc($('#title').value.trim())}</title><style>${css}body{font-family:system-ui,sans-serif;max-width:860px;margin:40px auto;padding:0 16px;color:#1f2328}</style></head><body>${buildDoc()}</body></html>`;
-  const filename = ($('#title').value.trim() || 'guide').replace(/[\\/:*?"<>|]/g, '_') + '.html';
+const fileBase = () => ($('#title').value.trim() || 'guide').replace(/[\\/:*?"<>|]/g, '_');
+async function saveFile(filename, data, type) {
   // claude.ai 아티팩트 안에서는 일반 다운로드가 막혀 있어 플랫폼 저장 기능을 씀
   const dl = window.claude && await window.claude.use('downloads');
-  if (dl) return dl.save({ filename, data: html }).catch(e => e.code !== 'declined' && alert('저장하지 못했습니다: ' + e.message));
+  if (dl) return dl.save({ filename, data }).catch(e => e.code !== 'declined' && alert('저장하지 못했습니다: ' + e.message));
   const a = document.createElement('a');
-  a.href = URL.createObjectURL(new Blob([html], { type: 'text/html' }));
+  a.href = URL.createObjectURL(new Blob([data], { type }));
   a.download = filename;
   document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+// ---------- HTML 저장 (다시 불러와 수정할 수 있게 편집 데이터를 함께 넣음) ----------
+function stateJSON() {
+  const data = {
+    v: 1, title: $('#title').value.trim(), purpose: $('#purpose').value.trim(), author: $('#author').value.trim(),
+    steps: steps.map(s => ({
+      title: $('.st-title', s.card).value.trim(), desc: $('.st-desc', s.card).value.trim(),
+      src: s.src || null, scale: s.scale,
+      objects: s.canvas ? (s.canvas.discardActiveObject(), s.canvas.toJSON(['isBlur', 'isMarker']).objects) : [],
+    })),
+  };
+  return JSON.stringify(data).replace(/</g, '\\u003c');   // 스크립트 태그가 조기에 닫히지 않게 < 를 이스케이프
+}
+$('#html').onclick = () => {
+  const css = [...document.styleSheets[0].cssRules].map(r => r.cssText).filter(t => /^(:root|\.gd|\*)/.test(t)).join('\n');
+  const html = `<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${esc($('#title').value.trim())}</title><style>${css}body{font-family:system-ui,sans-serif;max-width:860px;margin:40px auto;padding:0 16px;color:#1f2328}</style></head><body>${buildDoc()}<script type="application/json" id="guide-data">${stateJSON()}<\/script></body></html>`;
+  saveFile(fileBase() + '.html', html, 'text/html');
 };
+
+// ---------- HTML 불러오기 ----------
+async function loadHTML(file) {
+  const doc = new DOMParser().parseFromString(await file.text(), 'text/html');   // 스크립트는 실행되지 않음
+  let data;
+  try { data = JSON.parse(doc.getElementById('guide-data').textContent); } catch {}
+  if (!data) {   // 편집 데이터가 없는 이전 형식: 화면 내용으로 복원 (도형은 이미지에 합쳐져 있어 수정 불가)
+    const g = doc.querySelector('.gd');
+    if (!g) return alert('이 앱에서 저장한 HTML 파일이 아닙니다.');
+    data = {
+      title: g.querySelector('h1')?.textContent || '',
+      author: (g.querySelector('.meta')?.textContent.match(/작성자: (.*?)(?: · |$)/) || [])[1] || '',
+      purpose: (g.querySelector('.purpose')?.textContent || '').replace(/^목적/, ''),
+      steps: [...g.querySelectorAll('.step')].map(s => ({
+        title: (s.querySelector('h3')?.textContent || '').replace(/^\d+\.\s*/, '').replace(/^\d+단계$/, ''),
+        desc: s.querySelector('p')?.textContent || '', src: s.querySelector('img')?.getAttribute('src'), objects: [],
+      })),
+    };
+  }
+  if (!data.title || !Array.isArray(data.steps)) return alert('파일 내용을 읽을 수 없습니다.');
+  if ((steps.length || $('#title').value.trim()) && !confirm('지금 작업을 지우고 이 파일을 불러올까요?')) return;
+  steps.splice(0).forEach(s => { s.canvas?.dispose(); s.card.remove(); });
+  activeStep = null;
+  $('#title').value = String(data.title); $('#purpose').value = String(data.purpose || ''); $('#author').value = String(data.author || '');
+  go(2);   // 화면에 보여야 이미지 폭이 계산됨
+  data.steps.forEach(d => {
+    const s = addStep();
+    $('.st-title', s.card).value = String(d.title || ''); $('.st-desc', s.card).value = String(d.desc || '');
+    if (typeof d.src === 'string' && /^data:image\//.test(d.src)) setImage(s, d.src, d);   // 외부 주소 이미지는 받지 않음
+  });
+}
+$('#open').onclick = () => { $('#openFile').value = ''; $('#openFile').click(); };
+$('#openFile').onchange = e => e.target.files[0] && loadHTML(e.target.files[0]);
+
+// ---------- 터틀 스타일 PPT 저장 ----------
+// shortcut: 실제 터틀날리지 슬라이드 마스터·로고는 쓰지 않고 색·구성만 맞춤, 템플릿 파일 연동이 필요하면 turtle-ppt 스킬로 변환
+const loadPptx = () => window.PptxGenJS ? 0 : new Promise((ok, no) => {
+  const s = document.createElement('script');
+  s.src = 'https://cdn.jsdelivr.net/npm/pptxgenjs@3.12.0/dist/pptxgen.bundle.js'; s.onload = ok;
+  s.onerror = () => no(new Error('PPT 라이브러리를 불러오지 못했습니다. 인터넷 연결을 확인해주세요.'));
+  document.head.append(s);
+});
+async function savePptx() {
+  try { await loadPptx(); } catch (e) { return alert(e.message); }
+  const F = 'Malgun Gothic', TEAL = '0F766E', MINT = '14B8A6', INK = '1E293B', GRAY = '64748B', LINE = 'E2E8F0';
+  const title = $('#title').value.trim(), purpose = $('#purpose').value.trim(), author = $('#author').value.trim();
+  const P = new PptxGenJS(); P.layout = 'LAYOUT_WIDE';   // 13.33 x 7.5 in
+  P.title = title;
+  P.defineSlideMaster({
+    title: 'BODY', background: { color: 'FFFFFF' },
+    objects: [
+      { line: { x: 0.72, y: 6.83, w: 11.9, h: 0, line: { color: LINE, width: 0.75 } } },
+      { text: { text: '터틀날리지', options: { x: 0.72, y: 6.9, w: 5, h: 0.35, fontFace: F, margin: 0, fontSize: 10, bold: true, color: INK } } },
+    ],
+    slideNumber: { x: 11.6, y: 6.9, w: 1.0, h: 0.35, fontFace: F, margin: 0, fontSize: 10, color: GRAY, align: 'right' },
+  });
+  const bar = (s, x, y, color) => s.addShape(P.ShapeType.rect, { x, y, w: 0.95, h: 0.05, fill: { color }, line: { color, width: 0 } });
+  const head = (s, text, sub) => {
+    s.addText(text, { x: 0.72, y: 0.45, w: 11.9, h: 0.8, fontFace: F, margin: 0, fontSize: text.length > 26 ? 24 : 32, bold: true, color: INK, valign: 'middle', fit: 'shrink' });
+    bar(s, 0.72, 1.3, TEAL);
+    if (sub) s.addText(sub, { x: 0.72, y: 1.5, w: 11.9, h: 0.4, fontFace: F, margin: 0, fontSize: 13, color: GRAY });
+  };
+  const pick = (t, sizes) => sizes.find(([max]) => t.length <= max)[1];   // 글자 수에 따라 글자 크기 선택
+  const n = steps.length, date = new Date().toLocaleDateString('ko-KR');
+
+  // 표지
+  const cv = P.addSlide();
+  cv.addText('터틀날리지', { x: 0.85, y: 2.0, w: 8, h: 0.4, fontFace: F, margin: 0, fontSize: 14, bold: true, color: TEAL });
+  cv.addText(title, { x: 0.85, y: 2.5, w: 11.6, h: 1.4, fontFace: F, margin: 0, fontSize: pick(title, [[14, 48], [22, 40], [1e9, 32]]), bold: true, color: INK, valign: 'middle', fit: 'shrink' });
+  if (purpose) cv.addText(purpose, { x: 0.85, y: 4.0, w: 11.6, h: 0.9, fontFace: F, margin: 0, fontSize: pick(purpose, [[60, 18], [1e9, 14]]), color: GRAY, valign: 'top', fit: 'shrink' });
+  bar(cv, 0.85, 5.1, MINT);
+  cv.addText([author, date].filter(Boolean).join(' / '), { x: 0.85, y: 5.35, w: 8, h: 0.4, fontFace: F, margin: 0, fontSize: 12, color: GRAY });
+
+  // 목차 (6개씩 2열)
+  const titles = steps.map((s, i) => $('.st-title', s.card).value.trim() || `${i + 1}단계`);
+  if (n > 1) for (let from = 0; from < n; from += 6) {
+    const s = P.addSlide({ masterName: 'BODY' });
+    head(s, '목차', 'Contents');
+    titles.slice(from, from + 6).forEach((t, k) => {
+      const x = k % 2 ? 7.0 : 0.72, y = 2.3 + Math.floor(k / 2) * 1.3;
+      s.addText(String(from + k + 1).padStart(2, '0'), { x, y, w: 0.8, h: 0.6, fontFace: F, margin: 0, fontSize: 20, bold: true, color: MINT, valign: 'middle' });
+      s.addText(t, { x: x + 0.9, y, w: 4.7, h: 0.6, fontFace: F, margin: 0, fontSize: 16, color: INK, valign: 'middle', fit: 'shrink' });
+      s.addShape(P.ShapeType.line, { x, y: y + 0.75, w: 5.6, h: 0, line: { color: LINE, width: 0.75 } });
+    });
+  }
+
+  // 단계별 슬라이드: 이미지 + 설명
+  steps.forEach((st, i) => {
+    const s = P.addSlide({ masterName: 'BODY' }), d = $('.st-desc', st.card).value.trim();
+    head(s, `${i + 1}. ${titles[i]}`, `STEP ${i + 1} / ${n}`);
+    const boxW = d ? 7.5 : 11.9, boxH = 4.4;
+    if (st.canvas) {
+      st.canvas.discardActiveObject().renderAll();
+      const ar = st.canvas.width / st.canvas.height;
+      const w = Math.min(boxW, boxH * ar), h = w / ar, x = 0.72 + (boxW - w) / 2, y = 2.1 + (boxH - h) / 2;
+      s.addImage({ data: st.canvas.toDataURL({ format: 'png', multiplier: 1 / st.scale }), x, y, w, h });
+      s.addShape(P.ShapeType.rect, { x, y, w, h, fill: { type: 'none' }, line: { color: LINE, width: 0.75 } });
+    }
+    if (d) {
+      const x = st.canvas ? 8.55 : 0.72, w = st.canvas ? 4.05 : 11.9;
+      s.addText(d, { x, y: 2.1, w, h: boxH, fontFace: F, margin: 0, fontSize: pick(d, [[120, 16], [220, 14], [380, 12], [1e9, 11]]), color: INK, valign: 'top', paraSpaceAfter: 6, fit: 'shrink' });
+    }
+  });
+
+  // 마무리
+  const end = P.addSlide();
+  end.addText('감사합니다', { x: 0.85, y: 2.7, w: 11.6, h: 1.2, fontFace: F, margin: 0, fontSize: 48, bold: true, color: INK, valign: 'middle' });
+  bar(end, 0.85, 4.1, MINT);
+  if (author) end.addText(`문의 · ${author}`, { x: 0.85, y: 4.4, w: 11.6, h: 0.5, fontFace: F, margin: 0, fontSize: 14, color: GRAY });
+
+  saveFile(fileBase() + '.pptx', await P.write({ outputType: 'blob' }), 'application/vnd.openxmlformats-officedocument.presentationml.presentation');
+}
+$('#pptx').onclick = savePptx;
 // 새로고침·창 닫기로 작업이 날아가지 않게 경고 (저장 기능 없음)
 addEventListener('beforeunload', e => { if (steps.length || $('#title').value) e.preventDefault(); });
 </script>

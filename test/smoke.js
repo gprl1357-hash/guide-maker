@@ -4,6 +4,7 @@ const path = require('path'), assert = require('assert');
 (async () => {
   const b = await chromium.launch(), p = await b.newPage({ viewport: { width: 1100, height: 900 } });
   if (process.env.FABRIC) await p.route('**/fabric.min.js', r => r.fulfill({ path: process.env.FABRIC, contentType: 'text/javascript' }));
+  if (process.env.PPTX) await p.route('**/pptxgen.bundle.js', r => r.fulfill({ path: process.env.PPTX, contentType: 'text/javascript' }));
   p.on('pageerror', e => { throw e; });
   await p.goto(process.env.URL || 'file://' + path.resolve(__dirname, '../index.html'));
   await p.fill('#title', '테스트 <가이드>');
@@ -33,6 +34,34 @@ const path = require('path'), assert = require('assert');
   const saved = require('fs').readFileSync(await dl.path(), 'utf8');
   assert.match(saved, /테스트 &lt;가이드&gt;/);
   assert.strictEqual((saved.match(/<img /g) || []).length, 2);
+  // 저장한 HTML을 다시 불러와 도형까지 수정할 수 있는지 확인
+  const fs = require('fs'), os = require('os'), file = path.join(os.tmpdir(), 'guide-test.html');
+  fs.writeFileSync(file, saved);
+  const q = await b.newPage({ viewport: { width: 1100, height: 900 } });
+  q.on('pageerror', e => { throw e; });
+  q.on('dialog', d => d.accept());
+  if (process.env.FABRIC) await q.route('**/fabric.min.js', r => r.fulfill({ path: process.env.FABRIC, contentType: 'text/javascript' }));
+  await q.goto(process.env.URL || 'file://' + path.resolve(__dirname, '../index.html'));
+  const state = () => q.evaluate(() => ({
+    title: $('#title').value, purpose: $('#purpose').value, n: steps.length, desc: $('.st-desc', steps[0].card).value,
+    objs: steps.map(s => s.canvas ? s.canvas.getObjects().length : -1),
+    markers: steps[0].canvas ? steps[0].canvas.getObjects().filter(o => o.isMarker).length : 0,
+    blurs: steps[0].canvas ? steps[0].canvas.getObjects().filter(o => o.isBlur).length : 0,
+  }));
+  await q.setInputFiles('#openFile', file);
+  await q.waitForFunction(() => steps.length === 2 && steps[0].canvas && steps[0].canvas.getObjects().length === 7);
+  assert.deepStrictEqual(await state(), { title: '테스트 <가이드>', purpose: '목적 설명', n: 2, desc: '설명 1', objs: [7, 0], markers: 2, blurs: 1 });
+  // 편집 데이터가 없는 이전 형식 파일도 불러와 이미지·글은 복원
+  const oldFile = path.join(os.tmpdir(), 'guide-test-old.html');
+  fs.writeFileSync(oldFile, saved.replace(/<script type="application\/json" id="guide-data">[\s\S]*?<\/script>/, ''));
+  await q.setInputFiles('#openFile', oldFile);
+  await q.waitForFunction(() => steps.length === 2 && steps.every(s => s.canvas && s.canvas.getObjects().length === 0));
+  assert.deepStrictEqual(await state(), { title: '테스트 <가이드>', purpose: '목적 설명', n: 2, desc: '설명 1', objs: [0, 0], markers: 0, blurs: 0 });
+  // 터틀 스타일 PPT: 표지 + 목차 + 단계 2 + 마무리 = 5장
+  const [pd] = await Promise.all([p.waitForEvent('download'), p.click('#pptx')]);
+  const names = require('child_process').execFileSync('python3', ['-c', 'import zipfile,sys;print("\\n".join(zipfile.ZipFile(sys.argv[1]).namelist()))', await pd.path()]).toString();
+  assert.strictEqual((names.match(/^ppt\/slides\/slide\d+\.xml$/gm) || []).length, 5);
+  assert.strictEqual((names.match(/^ppt\/media\/.*\.png$/gm) || []).length, 2);
   console.log('ok');
   await b.close();
 })().catch(e => { console.error(e); process.exit(1); });
