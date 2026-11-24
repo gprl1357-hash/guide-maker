@@ -26,7 +26,7 @@ const path = require('path'), assert = require('assert');
   assert.strictEqual(await doc.locator('img').count(), 2);
   const w = await doc.locator('img').first().evaluate(i => i.naturalWidth);
   assert.strictEqual(w, 1600, '원본 해상도로 내보내야 함');
-  await p.screenshot({ path: process.env.SHOT || '/dev/null', fullPage: true });
+  if (process.env.SHOT) await p.screenshot({ path: process.env.SHOT, fullPage: true });
   await p.click('[data-go="4"]');
   const [dl] = await Promise.all([p.waitForEvent('download'), p.click('#html')]);
   // 헤드리스 Chromium은 한글 파일명을 'download'로 바꿔서 파일명 대신 내용을 확인

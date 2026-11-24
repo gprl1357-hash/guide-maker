@@ -296,12 +296,16 @@ function buildDoc() {
   return `<article class="gd"><h1>${esc(title)}</h1><div class="meta">${meta}</div>${purpose ? `<div class="purpose"><b>목적</b><br>${esc(purpose)}</div>` : ''}${body || '<p class="meta">작성된 단계가 없습니다.</p>'}</article>`;
 }
 $('#pdf').onclick = () => print();
-$('#html').onclick = () => {
+$('#html').onclick = async () => {
   const css = [...document.styleSheets[0].cssRules].map(r => r.cssText).filter(t => /^(:root|\.gd|\*)/.test(t)).join('\n');
   const html = `<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${esc($('#title').value.trim())}</title><style>${css}body{font-family:system-ui,sans-serif;max-width:860px;margin:40px auto;padding:0 16px;color:#1f2328}</style></head><body>${buildDoc()}</body></html>`;
+  const filename = ($('#title').value.trim() || 'guide').replace(/[\\/:*?"<>|]/g, '_') + '.html';
+  // claude.ai 아티팩트 안에서는 일반 다운로드가 막혀 있어 플랫폼 저장 기능을 씀
+  const dl = window.claude && await window.claude.use('downloads');
+  if (dl) return dl.save({ filename, data: html }).catch(e => e.code !== 'declined' && alert('저장하지 못했습니다: ' + e.message));
   const a = document.createElement('a');
   a.href = URL.createObjectURL(new Blob([html], { type: 'text/html' }));
-  a.download = ($('#title').value.trim() || 'guide').replace(/[\\/:*?"<>|]/g, '_') + '.html';
+  a.download = filename;
   document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 };
 // 새로고침·창 닫기로 작업이 날아가지 않게 경고 (저장 기능 없음)
